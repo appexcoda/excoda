@@ -1,0 +1,54 @@
+package app.excoda.features.registra
+
+import app.excoda.core.logging.LxLog
+import app.excoda.core.settings.CertificateInfo
+import app.excoda.core.settings.ConnectionChecker
+import app.excoda.core.settings.ConnectionResult
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import javax.inject.Inject
+
+class RegistraConnectionChecker @Inject constructor(
+    private val apiFactory: RegistraApiFactory
+) : ConnectionChecker {
+
+    override suspend fun checkConnection(
+        host: String,
+        apiKey: String,
+        onCertificateNeedsAcceptance: suspend (CertificateInfo) -> Boolean
+    ): ConnectionResult = withContext(Dispatchers.IO) {
+        try {
+            if (host.isBlank()) {
+                return@withContext ConnectionResult.Error("Host is empty")
+            }
+            if (apiKey.isBlank()) {
+                return@withContext ConnectionResult.Error("API key is empty")
+            }
+
+            val api = apiFactory.create(host, apiKey, onCertificateNeedsAcceptance)
+            val response = withTimeout(10000) {
+                api.health()
+            }
+
+            if (response.isSuccessful && response.body()?.status == "ok") {
+                ConnectionResult.Success
+            } else {
+                ConnectionResult.Error(response.message())
+            }
+        } catch (e: java.net.UnknownHostException) {
+            ConnectionResult.Error("Cannot reach host")
+        } catch (e: java.net.ConnectException) {
+            ConnectionResult.Error("Connection refused")
+        } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+            ConnectionResult.Error("Connection timeout")
+        } catch (e: javax.net.ssl.SSLHandshakeException) {
+            ConnectionResult.Error("SSL handshake failed: ${e.message}")
+        } catch (e: java.security.cert.CertificateException) {
+            ConnectionResult.Error("Certificate rejected: ${e.message}")
+        } catch (e: Exception) {
+            LxLog.e("RegistraConnectionChecker", "Health check failed", e)
+            ConnectionResult.Error(e.message ?: "Connection failed")
+        }
+    }
+}

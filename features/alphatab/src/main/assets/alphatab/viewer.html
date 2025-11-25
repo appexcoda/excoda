@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"/>
+    <title>AlphaTab Viewer</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { background: #fff; overflow: hidden; height: 100%; }
+
+        #target {
+            width: 100%;
+            height: 100vh;
+            overflow-y: auto;
+            overflow-x: hidden;
+            position: relative;
+            touch-action: none;
+            overscroll-behavior: none;
+        }
+
+        .at-surface { background: #fff; }
+
+        .page-break-marker {
+            position: absolute;
+            right: 0;
+            width: 5px;
+            background: rgba(255, 255, 255, 0);
+            z-index: 9999;
+            pointer-events: none;
+        }
+
+        .system-overlay-hide {
+            position: absolute;
+            left: 0;
+            right: 0;
+            background: white;
+            z-index: 8888;
+            pointer-events: none;
+        }
+
+        .page-number {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 14px;
+    color: rgba(0, 0, 0, 1);
+    pointer-events: none;
+    z-index: 9998;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    user-select: none;
+}
+    </style>
+</head>
+<body>
+<div id="target"></div>
+<script src="alphatab.js"></script>
+<script>
+    const State = { IDLE: 'idle', RENDERING: 'rendering' };
+
+    let state = State.IDLE;
+    let api = null;
+    let scoreData = null;
+    let selectedTrackIndex = 0;
+
+    // Scroll-based pagination
+    let scrollPositions = [];
+    let currentPage = 0;
+    let isScrolling = false;
+    let pendingMarkers = [];
+    let pageSystemMap = []; // Track which systems to hide for each page
+
+    // Notify Android of loading state
+    function setLoading(loading) {
+        window.Android?.onLoadingChanged(loading);
+    }
+
+    // Create AlphaTab API with settings
+    function createApi(settings) {
+        const container = document.getElementById("target");
+        container.innerHTML = '';
+
+        api?.destroy?.();
+
+        api = new alphaTab.AlphaTabApi(container, settings);
+
+        api.scoreLoaded.on(score => {
+            console.log("[AlphaTabViewer] Score loaded:", score.title);
+
+            const tracks = score.tracks.map((t, i) => ({
+                index: i,
+                name: t.name || `Track ${i + 1}`
+            }));
+            window.Android?.onTracksAvailable(JSON.stringify(tracks));
+
+            if (selectedTrackIndex < score.tracks.length) {
+                console.log("[AlphaTabViewer] Applying track selection:", selectedTrackIndex);
+                api.renderTracks([score.tracks[selectedTrackIndex]]);
+            }
+        });
+
+        api.renderFinished.on(() => {
+            console.log("[AlphaTabViewer] Render finished");
+
+            if (state === State.RENDERING) {
+                calculateScrollPositions();
+            }
+
+            state = State.IDLE;
+            setLoading(false);
+        });
+
+        api.error.on(error => {
+            console.error("[AlphaTabViewer] AlphaTab error:", error);
+            state = State.IDLE;
+            setLoading(false);
+            scoreData = null;
+            window.Android?.onError(error.message || "Failed to load file");
+        });
+
+        console.log("[AlphaTabViewer] AlphaTabApi created");
+    }
+
+    // Reset viewer to clean state
+    function resetViewer() {
+        console.log("[AlphaTabViewer] Resetting viewer to clean state");
+
+        api?.destroy?.();
+        api = null;
+        scoreData = null;
+        scrollPositions = [];
+        currentPage = 0;
+        selectedTrackIndex = 0;
+        state = State.IDLE;
+        pendingMarkers = [];
+        pageSystemMap = [];
+
+        const target = document.getElementById("target");
+        target.innerHTML = '';
+        target.scrollTop = 0;
+
+        console.log("[AlphaTabViewer] Viewer reset complete");
+    }
+
+    // Store score data (doesn't render yet)
+    function loadBase64(base64) {
+        console.log("[AlphaTabViewer] loadBase64Score invoked");
+        scoreData = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+        scrollPositions = [];
+        currentPage = 0;
+        pendingMarkers = [];
+        pageSystemMap = [];
+        console.log("[AlphaTabViewer] Score data stored, waiting for settings");
+    }
+
+    // Apply settings and render score
+    function applyAllSettings(config) {
+        console.log("[AlphaTabViewer] applyAllSettings called:", config);
+
+        if (!scoreData) {
+            console.warn("[AlphaTabViewer] No score data loaded yet");
+            return "ERROR: No score loaded";
+        }
+
+        try {
+            scrollPositions = [];
+            currentPage = 0;
+            pendingMarkers = [];
+            pageSystemMap = [];
+            selectedTrackIndex = config.selectedTrackIndex || 0;
+
+            const settings = new alphaTab.Settings();
+            settings.core.engine = 'html5';
+            settings.core.useWorkers = false;
+            settings.core.logLevel = 'warning';
+            settings.player.enablePlayer = false;
+
+            // Colors
+            settings.display.resources.secondaryGlyphColor = new alphaTab.model.Color(0, 0, 0, 255);
+            settings.display.resources.mainGlyphColor = new alphaTab.model.Color(0, 0, 0, 255);
+
+            // Display settings
+            const profiles = {
+                auto: alphaTab.StaveProfile.Default,
+                default: alphaTab.StaveProfile.Default,
+                scoretab: alphaTab.StaveProfile.ScoreTab,
+                score: alphaTab.StaveProfile.Score,
+                tab: alphaTab.StaveProfile.Tab,
+                tabmixed: alphaTab.StaveProfile.TabMixed
+            };
+            settings.display.staveProfile = profiles[config.staveProfile.toLowerCase()] ?? alphaTab.StaveProfile.Default;
+
+            const layoutModes = {
+                page: alphaTab.LayoutMode.Page,
+                horizontal: alphaTab.LayoutMode.Horizontal
+            };
+            settings.display.layoutMode = layoutModes[config.layoutMode.toLowerCase()] ?? alphaTab.LayoutMode.Page;
+
+            settings.display.scale = config.scale;
+            settings.display.stretchForce = config.stretch;
+            settings.display.barsPerRow = config.barsPerRow;
+            settings.display.padding = config.padding;
+
+            if (!config.isAutomaticSystemsSpacing && config.systemsSpacing > 0) {
+                settings.display.spacingReduction = config.systemsSpacing;
+            }
+
+            // Notation settings
+            const rhythmModes = {
+                hidden: alphaTab.TabRhythmMode.Hidden,
+                showwithbeams: alphaTab.TabRhythmMode.ShowWithBeams,
+                showwithbars: alphaTab.TabRhythmMode.ShowWithBars,
+                automatic: alphaTab.TabRhythmMode.Automatic
+            };
+            settings.notation.rhythmMode = rhythmModes[config.tabRhythmMode.toLowerCase()] ?? alphaTab.TabRhythmMode.Automatic;
+
+            const elements = alphaTab.NotationElement;
+            settings.notation.elements.set(elements.EffectTempo, config.showTempo);
+            settings.notation.elements.set(elements.GuitarTuning, config.showTuning);
+            settings.notation.elements.set(elements.ChordDiagrams, config.showChordDiagrams);
+            settings.notation.elements.set(elements.EffectChordNames, config.showChordNames);
+            settings.notation.elements.set(elements.EffectLetRing, config.showBeatBarre);
+            settings.notation.elements.set(elements.EffectDynamics, config.showDynamics);
+            settings.notation.elements.set(elements.EffectText, config.showText);
+            settings.notation.elements.set(elements.EffectPickStroke, config.showPickStroke);
+            settings.notation.elements.set(elements.EffectLyrics, config.showLyrics);
+            settings.notation.elements.set(elements.TrackNames, config.showTrackNames);
+
+            console.log('[AlphaTabViewer] Recreating API with new settings');
+            createApi(settings);
+
+            console.log('[AlphaTabViewer] Rendering full score (all bars)');
+            state = State.RENDERING;
+            setLoading(true);
+
+            api.load(scoreData);
+
+            console.log('[AlphaTabViewer] API recreated and score loading');
+            return "SUCCESS";
+        } catch (error) {
+            console.error("[AlphaTabViewer] Failed to apply settings", error);
+            state = State.IDLE;
+            setLoading(false);
+            window.Android?.onError(`Settings error: ${error.message}`);
+            return `ERROR: ${error.message}`;
+        }
+    }
+
+    function calculateScrollPositions() {
+        scrollPositions = [];
+        currentPage = 0;
+        pendingMarkers = [];
+        pageSystemMap = [];
+
+        const systems = api.getSystemsInfo();
+        if (!systems?.length) {
+            console.log("[AlphaTabViewer] No systems info");
+            return;
+        }
+
+        const container = document.getElementById("target");
+        const surface = container.querySelector('.at-surface');
+        if (!surface) {
+            console.log("[AlphaTabViewer] Surface not found");
+            return;
+        }
+
+        const containerHeight = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+
+        console.log(`[AlphaTabViewer] Container: ${containerHeight}px, Systems: ${systems.length}`);
+
+        // Remove any existing spacer and markers
+        const existingSpacer = container.querySelector('.scroll-spacer');
+        if (existingSpacer) {
+            existingSpacer.remove();
+        }
+
+        document.querySelectorAll('.page-break-marker').forEach(el => el.remove());
+        document.querySelectorAll('.system-overlay-hide').forEach(el => el.remove());
+
+        // Add huge spacer at end
+        const spacer = document.createElement('div');
+        spacer.className = 'scroll-spacer';
+        spacer.style.height = `${Math.ceil(containerHeight * 5)}px`;
+        spacer.style.width = '100%';
+        spacer.style.display = 'block';
+        spacer.style.flexShrink = '0';
+        container.appendChild(spacer);
+
+        console.log(`[AlphaTabViewer] Added ${spacer.style.height} spacer to container`);
+
+        const scaleFactor = api.settings.display.scale || 1.0;
+
+        // Log system info
+        systems.forEach((system, idx) => {
+            const y = system.y * scaleFactor;
+            const height = system.height * scaleFactor;
+            console.log(`[AlphaTabViewer] System ${idx} (bars ${system.firstBarIndex + 1}-${system.lastBarIndex + 1}) → y=${y.toFixed(0)}px, height=${height.toFixed(1)}px`);
+        });
+
+        // First page always starts at top
+        scrollPositions.push(0);
+
+        // Find which systems fit on page 1 (scrollY = 0)
+        let lastSystemOnPage1 = -1;
+        for (let i = 0; i < systems.length; i++) {
+            const sys = systems[i];
+            const sysTop = sys.y * scaleFactor;
+            const sysBottom = sysTop + (sys.height * scaleFactor);
+
+            if (sysBottom <= containerHeight) {
+                lastSystemOnPage1 = i;
+            } else {
+                break;
+            }
+        }
+
+        let systemsToHide = [];
+
+        if (lastSystemOnPage1 >= 0 && lastSystemOnPage1 < systems.length - 1) {
+            const lastSys = systems[lastSystemOnPage1];
+            const nextSystemIdx = lastSystemOnPage1 + 1;
+
+            pendingMarkers.push({
+                systemIdx: lastSystemOnPage1,
+                pageNumber: 1,
+                y: lastSys.y * scaleFactor,
+                height: lastSys.height * scaleFactor
+            });
+
+            // Track which system to hide on page 1
+            systemsToHide.push(nextSystemIdx);
+
+            console.log(`[AlphaTabViewer] 🔴 Page 1: Last system before scroll = ${lastSystemOnPage1}, hiding system ${nextSystemIdx}`);
+        }
+
+        pageSystemMap.push({
+            pageNumber: 1,
+            lastSystemIdx: lastSystemOnPage1,
+            hideSystemsAfter: lastSystemOnPage1
+        });
+
+        // Now calculate remaining pages
+        let currentSystemIdx = lastSystemOnPage1 + 1;
+        let pageNumber = 1;
+
+        while (currentSystemIdx < systems.length) {
+            const scrollY = systems[currentSystemIdx].y * scaleFactor;
+            const viewportBottom = scrollY + containerHeight;
+
+            scrollPositions.push(scrollY);
+            pageNumber++;
+            console.log(`[AlphaTabViewer] 📍 Page ${pageNumber}: Y=${scrollY.toFixed(0)}px (starts at system ${currentSystemIdx})`);
+
+            // Find last system that fits on this page
+            let lastSystemOnThisPage = currentSystemIdx;
+            for (let i = currentSystemIdx; i < systems.length; i++) {
+                const sys = systems[i];
+                const sysTop = sys.y * scaleFactor;
+                const sysBottom = sysTop + (sys.height * scaleFactor);
+
+                if (sysTop >= scrollY && sysBottom <= viewportBottom) {
+                    lastSystemOnThisPage = i;
+                } else if (sysBottom > viewportBottom) {
+                    break;
+                }
+            }
+
+            // Place marker on the last system of this page
+            if (lastSystemOnThisPage < systems.length - 1) {
+                const lastSys = systems[lastSystemOnThisPage];
+                const nextSystemIdx = lastSystemOnThisPage + 1;
+
+                pendingMarkers.push({
+                    systemIdx: lastSystemOnThisPage,
+                    pageNumber: pageNumber,
+                    y: lastSys.y * scaleFactor,
+                    height: lastSys.height * scaleFactor
+                });
+
+                systemsToHide.push(nextSystemIdx);
+
+                console.log(`[AlphaTabViewer] 🔴 Page ${pageNumber}: Last system before scroll = ${lastSystemOnThisPage}, hiding system ${nextSystemIdx}`);
+            }
+
+            pageSystemMap.push({
+                pageNumber: pageNumber,
+                lastSystemIdx: lastSystemOnThisPage,
+                hideSystemsAfter: lastSystemOnThisPage
+            });
+
+            currentSystemIdx = lastSystemOnThisPage + 1;
+        }
+
+        console.log(`[AlphaTabViewer] 📄 Scroll pagination complete: ${scrollPositions.length} pages, ${pendingMarkers.length} markers`);
+
+        // Apply markers after a short delay
+        setTimeout(() => {
+            applyPageMarkers();
+            updateSystemVisibility();
+            updatePageNumber();
+        }, 100);
+    }
+
+    function applyPageMarkers() {
+    if (pendingMarkers.length === 0) {
+        console.log("[AlphaTabViewer] No pending markers to apply");
+        return;
+    }
+
+    const container = document.getElementById("target");
+    if (!container) return;
+
+    console.log(`[AlphaTabViewer] Applying ${pendingMarkers.length} page markers...`);
+
+    // Remove old markers
+    document.querySelectorAll('.page-break-marker').forEach(el => el.remove());
+
+    // Add red line markers at 50% of system height
+    pendingMarkers.forEach(({ systemIdx, pageNumber, y, height }) => {
+        const markerHeight = height * 0.5;
+        const markerTop = y + (height * 0.25);
+
+        const marker = document.createElement('div');
+        marker.className = 'page-break-marker';
+        marker.style.top = `${markerTop.toFixed(0)}px`;
+        marker.style.height = `${markerHeight.toFixed(0)}px`;
+        marker.title = `Last system on page ${pageNumber} (system ${systemIdx})`;
+
+        container.appendChild(marker);
+
+        console.log(`[AlphaTabViewer] 🔴 Placed marker for system ${systemIdx}: top=${markerTop.toFixed(0)}px, height=${markerHeight.toFixed(0)}px`);
+    });
+}
+
+function updatePageNumber() {
+    let pageNumberEl = document.querySelector('.page-number');
+
+    if (!pageNumberEl) {
+        pageNumberEl = document.createElement('div');
+        pageNumberEl.className = 'page-number';
+        document.body.appendChild(pageNumberEl);
+    }
+
+    if (scrollPositions.length > 1) {
+        pageNumberEl.textContent = `${currentPage + 1} / ${scrollPositions.length}`;
+        pageNumberEl.style.display = 'block';
+    } else {
+        pageNumberEl.style.display = 'none';
+    }
+}
+
+    function updateSystemVisibility() {
+    const systems = api.getSystemsInfo();
+    if (!systems?.length || !pageSystemMap.length) return;
+
+    const container = document.getElementById("target");
+    if (!container) return;
+
+    const scaleFactor = api.settings.display.scale || 1.0;
+
+    // Remove old overlays
+    document.querySelectorAll('.system-overlay-hide').forEach(el => el.remove());
+
+    // Get the current page info
+    const currentPageInfo = pageSystemMap[currentPage];
+    if (!currentPageInfo) return;
+
+    const lastVisibleSystem = currentPageInfo.hideSystemsAfter;
+    const systemToHide = lastVisibleSystem + 1;
+
+    // Only hide the single next system (if it exists)
+    if (systemToHide < systems.length) {
+        const sys = systems[systemToHide];
+        const sysTop = sys.y * scaleFactor;
+        const sysHeight = sys.height * scaleFactor;
+
+        const overlay = document.createElement('div');
+        overlay.className = 'system-overlay-hide';
+        overlay.style.top = `${sysTop.toFixed(0)}px`;
+        overlay.style.height = `${sysHeight.toFixed(0)}px`;
+        container.appendChild(overlay);
+
+        console.log(`[AlphaTabViewer] 👻 Hiding system ${systemToHide} (the first system of next page)`);
+    }
+}
+
+    // Navigation
+    function nextPage() {
+        if (scrollPositions.length <= 1) {
+            console.log("[AlphaTabViewer] Pagination disabled - single page");
+            return "PAGINATION_DISABLED";
+        }
+
+        if (isScrolling) {
+            console.log("[AlphaTabViewer] Scroll in progress");
+            return "BUSY";
+        }
+
+        if (currentPage >= scrollPositions.length - 1) {
+            console.log("[AlphaTabViewer] Already at last page");
+            return "LAST_PAGE";
+        }
+
+        currentPage++;
+        const targetY = scrollPositions[currentPage];
+        console.log(`[AlphaTabViewer] ⬇️ Next page: ${currentPage + 1}/${scrollPositions.length}, scrolling to Y=${targetY.toFixed(0)}px`);
+
+        scrollToPosition(targetY);
+        return "SUCCESS";
+    }
+
+    function previousPage() {
+        if (scrollPositions.length <= 1) {
+            console.log("[AlphaTabViewer] Pagination disabled - single page");
+            return "PAGINATION_DISABLED";
+        }
+
+        if (isScrolling) {
+            console.log("[AlphaTabViewer] Scroll in progress");
+            return "BUSY";
+        }
+
+        if (currentPage <= 0) {
+            console.log("[AlphaTabViewer] Already at first page");
+            return "FIRST_PAGE";
+        }
+
+        currentPage--;
+        const targetY = scrollPositions[currentPage];
+        console.log(`[AlphaTabViewer] ⬆️ Previous page: ${currentPage + 1}/${scrollPositions.length}, scrolling to Y=${targetY.toFixed(0)}px`);
+
+        scrollToPosition(targetY);
+        return "SUCCESS";
+    }
+
+    function scrollToPosition(y) {
+        const container = document.getElementById("target");
+        const startY = container.scrollTop;
+
+        console.log(`[AlphaTabViewer] 📜 Scrolling from Y=${startY.toFixed(0)}px to Y=${y.toFixed(0)}px (delta=${(y - startY).toFixed(0)}px)`);
+
+        isScrolling = true;
+
+        container.scrollTo({
+            top: y,
+            behavior: 'auto'
+        });
+
+        requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+        isScrolling = false;
+        const actualY = container.scrollTop;
+        console.log(`[AlphaTabViewer] ✅ Scroll complete: actual Y=${actualY.toFixed(0)}px (target was ${y.toFixed(0)}px)`);
+
+        // Update visibility after scroll
+        updateSystemVisibility();
+        updatePageNumber();
+    });
+});
+    }
+
+    // Expose API
+    window.AlphaTabBridge = {
+        loadBase64,
+        applyAllSettings,
+        nextPage,
+        previousPage,
+        resetViewer
+    };
+
+    // Initialize on load
+    window.addEventListener("load", () => {
+        console.log("[AlphaTabViewer] Window loaded");
+        const settings = new alphaTab.Settings();
+        settings.core.engine = 'html5';
+        settings.player.enablePlayer = false;
+        settings.display.resources.secondaryGlyphColor = new alphaTab.model.Color(0, 0, 0, 255);
+        settings.display.resources.mainGlyphColor = new alphaTab.model.Color(0, 0, 0, 255);
+        createApi(settings);
+    });
+</script>
+</body>
+</html>
