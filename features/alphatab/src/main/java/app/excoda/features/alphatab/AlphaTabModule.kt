@@ -139,32 +139,26 @@ object AlphaTabModule : FileModule {
             AndroidView(
                 modifier = Modifier.fillMaxSize(),
                 factory = {
+                    // Create interceptor ONCE
+                    val interceptor = PaginationInterceptor(
+                        onPreviousPage = { holder.previousPage() },
+                        onNextPage = { holder.nextPage() },
+                        onCenterZoneTap = {
+                            val newState = !isCenterZoneHidden
+                            fabMenuHost.setCenterZoneHidden(newState)
+                            LxLog.d("AlphaTab", "Center zone toggle: hidden=$newState")
+                        }
+                    )
+
                     holder.webView.apply {
                         layoutParams = android.view.ViewGroup.LayoutParams(
                             android.view.ViewGroup.LayoutParams.MATCH_PARENT,
                             android.view.ViewGroup.LayoutParams.MATCH_PARENT
                         )
-                        setOnTouchListener { view, event ->
-                            val y = event.y
-                            val topBound = view.height * 0.25f
-                            val bottomBound = view.height * 0.75f
-
-                            if (y in topBound..bottomBound) {
-                                PaginationInterceptor(
-                                    onPreviousPage = { holder.previousPage() },
-                                    onNextPage = { holder.nextPage() },
-                                    onCenterZoneTap = {
-                                        val newState = !isCenterZoneHidden
-                                        fabMenuHost.setCenterZoneHidden(newState)
-                                        LxLog.d("AlphaTab", "Center zone toggle: hidden=$newState")
-                                    }
-                                ).onTouch(view, event)
-                            } else false
-                        }
+                        setOnTouchListener(interceptor)
                     }
                 }
             )
-
             if (isLoading) {
                 Box(
                     modifier = Modifier

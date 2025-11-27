@@ -2,42 +2,94 @@ package app.excoda.features.alphatab
 
 import android.view.MotionEvent
 import android.view.View
+import android.webkit.WebView
 import app.excoda.core.logging.LxLog
+import kotlin.math.abs
 
 class PaginationInterceptor(
     private val onPreviousPage: () -> Unit,
     private val onNextPage: () -> Unit,
     private val onCenterZoneTap: () -> Unit
 ) : View.OnTouchListener {
+
+    private var downX = 0f
+    private var downY = 0f
+    private var downTime = 0L
+
+    companion object {
+        private const val TAP_THRESHOLD = 100f
+        private const val SWIPE_THRESHOLD = 150f
+        private const val SWIPE_TIMEOUT = 500L
+    }
+
     override fun onTouch(v: View, event: MotionEvent): Boolean {
-        if (event.action != MotionEvent.ACTION_DOWN) {
-            return false // Let other events pass through
+        when (event.action) {
+            MotionEvent.ACTION_DOWN -> {
+                downX = event.x
+                downY = event.y
+                downTime = event.eventTime
+                LxLog.d("AlphaTabPagination", "DOWN at x=${event.x.toInt()}, y=${event.y.toInt()}")
+
+                (v as? WebView)?.onTouchEvent(event)
+                return true
+            }
+
+            MotionEvent.ACTION_MOVE -> {
+                (v as? WebView)?.onTouchEvent(event)
+                return true
+            }
+
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                val upX = event.x
+                val upY = event.y
+                val deltaX = abs(upX - downX)
+                val deltaY = abs(upY - downY)
+                val deltaTime = event.eventTime - downTime
+                val deltaXSigned = upX - downX
+
+                LxLog.d("AlphaTabPagination", "UP at x=${upX.toInt()}, y=${upY.toInt()} | delta: x=${deltaX.toInt()}, y=${deltaY.toInt()}, time=${deltaTime}ms")
+
+                // Horizontal swipe
+                val isHorizontalSwipe = deltaX > SWIPE_THRESHOLD &&
+                        deltaX > deltaY * 1.5f &&
+                        deltaTime < SWIPE_TIMEOUT
+
+                if (isHorizontalSwipe) {
+                    val direction = if (deltaXSigned > 0) "RIGHT" else "LEFT"
+                    LxLog.d("AlphaTabPagination", "SWIPE $direction detected")
+                    (v as? WebView)?.onTouchEvent(event)
+                    return true
+                }
+
+                // Too much movement
+                if (deltaX > TAP_THRESHOLD || deltaY > TAP_THRESHOLD) {
+                    LxLog.d("AlphaTabPagination", "Movement too large - not a tap")
+                    return true
+                }
+
+                // It's a tap
+                val viewWidth = v.width
+                val leftZoneEnd = viewWidth * 0.25f
+                val rightZoneStart = viewWidth * 0.75f
+
+                when {
+                    upX < leftZoneEnd -> {
+                        LxLog.d("AlphaTabPagination", "TAP: Left zone - previous page")
+                        onPreviousPage()
+                    }
+                    upX > rightZoneStart -> {
+                        LxLog.d("AlphaTabPagination", "TAP: Right zone - next page")
+                        onNextPage()
+                    }
+                    else -> {
+                        LxLog.d("AlphaTabPagination", "TAP: Center zone - toggle UI")
+                        onCenterZoneTap()
+                    }
+                }
+                return true
+            }
         }
 
-        val viewWidth = v.width
-        val tapX = event.x
-
-        // Calculate tap zones: 25% - 50% - 25%
-        val leftZoneEnd = viewWidth * 0.25f
-        val rightZoneStart = viewWidth * 0.75f
-
-        when {
-            tapX < leftZoneEnd -> {
-                LxLog.d("AlphaTabPagination", "Left zone tap (25%) - previous page")
-                onPreviousPage()
-                return true // Consume event
-            }
-            tapX > rightZoneStart -> {
-                LxLog.d("AlphaTabPagination", "Right zone tap (25%) - next page")
-                onNextPage()
-                return true // Consume event
-            }
-            else -> {
-                // Center zone (50%) - toggle UI visibility
-                LxLog.d("AlphaTabPagination", "Center zone tap (50%) - toggle UI")
-                onCenterZoneTap()
-                return true // Consume event
-            }
-        }
+        return false
     }
 }

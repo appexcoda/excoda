@@ -39,17 +39,17 @@
         }
 
         .page-number {
-    position: fixed;
-    bottom: 20px;
-    left: 50%;
-    transform: translateX(-50%);
-    font-size: 14px;
-    color: rgba(0, 0, 0, 1);
-    pointer-events: none;
-    z-index: 9998;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    user-select: none;
-}
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 14px;
+            color: rgba(0, 0, 0, 1);
+            pointer-events: none;
+            z-index: 9998;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            user-select: none;
+        }
     </style>
 </head>
 <body>
@@ -69,6 +69,19 @@
     let isScrolling = false;
     let pendingMarkers = [];
     let pageSystemMap = []; // Track which systems to hide for each page
+
+    // Touch/Swipe handling
+    let touchState = {
+        startX: 0,
+        startY: 0,
+        startTime: 0,
+        isDragging: false,
+        hasMoved: false
+    };
+
+    const SWIPE_THRESHOLD = 50; // Minimum distance for swipe (px)
+    const TAP_THRESHOLD = 10;    // Maximum movement for tap (px)
+    const SWIPE_TIMEOUT = 300;   // Maximum time for swipe (ms)
 
     // Notify Android of loading state
     function setLoading(loading) {
@@ -403,87 +416,87 @@
     }
 
     function applyPageMarkers() {
-    if (pendingMarkers.length === 0) {
-        console.log("[AlphaTabViewer] No pending markers to apply");
-        return;
+        if (pendingMarkers.length === 0) {
+            console.log("[AlphaTabViewer] No pending markers to apply");
+            return;
+        }
+
+        const container = document.getElementById("target");
+        if (!container) return;
+
+        console.log(`[AlphaTabViewer] Applying ${pendingMarkers.length} page markers...`);
+
+        // Remove old markers
+        document.querySelectorAll('.page-break-marker').forEach(el => el.remove());
+
+        // Add red line markers at 50% of system height
+        pendingMarkers.forEach(({ systemIdx, pageNumber, y, height }) => {
+            const markerHeight = height * 0.5;
+            const markerTop = y + (height * 0.25);
+
+            const marker = document.createElement('div');
+            marker.className = 'page-break-marker';
+            marker.style.top = `${markerTop.toFixed(0)}px`;
+            marker.style.height = `${markerHeight.toFixed(0)}px`;
+            marker.title = `Last system on page ${pageNumber} (system ${systemIdx})`;
+
+            container.appendChild(marker);
+
+            console.log(`[AlphaTabViewer] 🔴 Placed marker for system ${systemIdx}: top=${markerTop.toFixed(0)}px, height=${markerHeight.toFixed(0)}px`);
+        });
     }
 
-    const container = document.getElementById("target");
-    if (!container) return;
+    function updatePageNumber() {
+        let pageNumberEl = document.querySelector('.page-number');
 
-    console.log(`[AlphaTabViewer] Applying ${pendingMarkers.length} page markers...`);
+        if (!pageNumberEl) {
+            pageNumberEl = document.createElement('div');
+            pageNumberEl.className = 'page-number';
+            document.body.appendChild(pageNumberEl);
+        }
 
-    // Remove old markers
-    document.querySelectorAll('.page-break-marker').forEach(el => el.remove());
-
-    // Add red line markers at 50% of system height
-    pendingMarkers.forEach(({ systemIdx, pageNumber, y, height }) => {
-        const markerHeight = height * 0.5;
-        const markerTop = y + (height * 0.25);
-
-        const marker = document.createElement('div');
-        marker.className = 'page-break-marker';
-        marker.style.top = `${markerTop.toFixed(0)}px`;
-        marker.style.height = `${markerHeight.toFixed(0)}px`;
-        marker.title = `Last system on page ${pageNumber} (system ${systemIdx})`;
-
-        container.appendChild(marker);
-
-        console.log(`[AlphaTabViewer] 🔴 Placed marker for system ${systemIdx}: top=${markerTop.toFixed(0)}px, height=${markerHeight.toFixed(0)}px`);
-    });
-}
-
-function updatePageNumber() {
-    let pageNumberEl = document.querySelector('.page-number');
-
-    if (!pageNumberEl) {
-        pageNumberEl = document.createElement('div');
-        pageNumberEl.className = 'page-number';
-        document.body.appendChild(pageNumberEl);
+        if (scrollPositions.length > 1) {
+            pageNumberEl.textContent = `${currentPage + 1} / ${scrollPositions.length}`;
+            pageNumberEl.style.display = 'block';
+        } else {
+            pageNumberEl.style.display = 'none';
+        }
     }
-
-    if (scrollPositions.length > 1) {
-        pageNumberEl.textContent = `${currentPage + 1} / ${scrollPositions.length}`;
-        pageNumberEl.style.display = 'block';
-    } else {
-        pageNumberEl.style.display = 'none';
-    }
-}
 
     function updateSystemVisibility() {
-    const systems = api.getSystemsInfo();
-    if (!systems?.length || !pageSystemMap.length) return;
+        const systems = api.getSystemsInfo();
+        if (!systems?.length || !pageSystemMap.length) return;
 
-    const container = document.getElementById("target");
-    if (!container) return;
+        const container = document.getElementById("target");
+        if (!container) return;
 
-    const scaleFactor = api.settings.display.scale || 1.0;
+        const scaleFactor = api.settings.display.scale || 1.0;
 
-    // Remove old overlays
-    document.querySelectorAll('.system-overlay-hide').forEach(el => el.remove());
+        // Remove old overlays
+        document.querySelectorAll('.system-overlay-hide').forEach(el => el.remove());
 
-    // Get the current page info
-    const currentPageInfo = pageSystemMap[currentPage];
-    if (!currentPageInfo) return;
+        // Get the current page info
+        const currentPageInfo = pageSystemMap[currentPage];
+        if (!currentPageInfo) return;
 
-    const lastVisibleSystem = currentPageInfo.hideSystemsAfter;
-    const systemToHide = lastVisibleSystem + 1;
+        const lastVisibleSystem = currentPageInfo.hideSystemsAfter;
+        const systemToHide = lastVisibleSystem + 1;
 
-    // Only hide the single next system (if it exists)
-    if (systemToHide < systems.length) {
-        const sys = systems[systemToHide];
-        const sysTop = sys.y * scaleFactor;
-        const sysHeight = sys.height * scaleFactor;
+        // Only hide the single next system (if it exists)
+        if (systemToHide < systems.length) {
+            const sys = systems[systemToHide];
+            const sysTop = sys.y * scaleFactor;
+            const sysHeight = sys.height * scaleFactor;
 
-        const overlay = document.createElement('div');
-        overlay.className = 'system-overlay-hide';
-        overlay.style.top = `${sysTop.toFixed(0)}px`;
-        overlay.style.height = `${sysHeight.toFixed(0)}px`;
-        container.appendChild(overlay);
+            const overlay = document.createElement('div');
+            overlay.className = 'system-overlay-hide';
+            overlay.style.top = `${sysTop.toFixed(0)}px`;
+            overlay.style.height = `${sysHeight.toFixed(0)}px`;
+            container.appendChild(overlay);
 
-        console.log(`[AlphaTabViewer] 👻 Hiding system ${systemToHide} (the first system of next page)`);
+            console.log(`[AlphaTabViewer] 👻 Hiding system ${systemToHide} (the first system of next page)`);
+        }
     }
-}
 
     // Navigation
     function nextPage() {
@@ -548,16 +561,96 @@ function updatePageNumber() {
         });
 
         requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-        isScrolling = false;
-        const actualY = container.scrollTop;
-        console.log(`[AlphaTabViewer] ✅ Scroll complete: actual Y=${actualY.toFixed(0)}px (target was ${y.toFixed(0)}px)`);
+            requestAnimationFrame(() => {
+                isScrolling = false;
+                const actualY = container.scrollTop;
+                console.log(`[AlphaTabViewer] ✅ Scroll complete: actual Y=${actualY.toFixed(0)}px (target was ${y.toFixed(0)}px)`);
 
-        // Update visibility after scroll
-        updateSystemVisibility();
-        updatePageNumber();
-    });
-});
+                // Update visibility after scroll
+                updateSystemVisibility();
+                updatePageNumber();
+            });
+        });
+    }
+
+    // Swipe gesture handling
+    function initSwipeHandlers() {
+        const container = document.getElementById("target");
+
+        container.addEventListener('touchstart', (e) => {
+            if (e.touches.length !== 1) return;
+
+            const touch = e.touches[0];
+            touchState.startX = touch.clientX;
+            touchState.startY = touch.clientY;
+            touchState.startTime = Date.now();
+            touchState.isDragging = false;
+            touchState.hasMoved = false;
+        }, { passive: true });
+
+        container.addEventListener('touchmove', (e) => {
+            if (e.touches.length !== 1) return;
+
+            const touch = e.touches[0];
+            const deltaX = Math.abs(touch.clientX - touchState.startX);
+            const deltaY = Math.abs(touch.clientY - touchState.startY);
+
+            // Mark as moved if beyond tap threshold
+            if (deltaX > TAP_THRESHOLD || deltaY > TAP_THRESHOLD) {
+                touchState.hasMoved = true;
+            }
+
+            // Detect horizontal swipe intent
+            if (deltaX > deltaY * 1.5 && deltaX > 20) {
+                touchState.isDragging = true;
+            }
+        }, { passive: true });
+
+        container.addEventListener('touchend', (e) => {
+            if (e.changedTouches.length !== 1) return;
+
+            const touch = e.changedTouches[0];
+            const deltaX = touch.clientX - touchState.startX;
+            const deltaY = touch.clientY - touchState.startY;
+            const deltaTime = Date.now() - touchState.startTime;
+            const absDeltaX = Math.abs(deltaX);
+            const absDeltaY = Math.abs(deltaY);
+
+            // If no significant movement, treat as tap (let Android handle it)
+            if (!touchState.hasMoved) {
+                console.log("[AlphaTabViewer] Tap detected (no handling here)");
+                return;
+            }
+
+            // Check if it's a horizontal swipe
+            if (touchState.isDragging &&
+                absDeltaX > SWIPE_THRESHOLD &&
+                absDeltaX > absDeltaY * 1.3 &&
+                deltaTime < SWIPE_TIMEOUT) {
+
+                if (deltaX > 0) {
+                    // Swipe right = previous page
+                    console.log("[AlphaTabViewer] Swipe RIGHT detected");
+                    const result = previousPage();
+                    if (result === "SUCCESS") {
+                        window.Android?.onPageChanged?.(currentPage + 1, scrollPositions.length);
+                    }
+                } else {
+                    // Swipe left = next page
+                    console.log("[AlphaTabViewer] Swipe LEFT detected");
+                    const result = nextPage();
+                    if (result === "SUCCESS") {
+                        window.Android?.onPageChanged?.(currentPage + 1, scrollPositions.length);
+                    }
+                }
+            }
+
+            // Reset state
+            touchState.isDragging = false;
+            touchState.hasMoved = false;
+        }, { passive: true });
+
+        console.log("[AlphaTabViewer] Swipe handlers initialized");
     }
 
     // Expose API
@@ -578,6 +671,7 @@ function updatePageNumber() {
         settings.display.resources.secondaryGlyphColor = new alphaTab.model.Color(0, 0, 0, 255);
         settings.display.resources.mainGlyphColor = new alphaTab.model.Color(0, 0, 0, 255);
         createApi(settings);
+        initSwipeHandlers();
     });
 </script>
 </body>
