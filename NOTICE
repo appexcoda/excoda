@@ -1,0 +1,13 @@
+ExCoda
+Copyright 2025 github.com/appexcoda
+
+This application incorporates components from:
+- AlphaTab (MPL-2.0)
+- PDF.js by Mozilla (Apache 2.0)
+- MediaPipe by Google (Apache 2.0)
+- ZXing ("Zebra Crossing") by ZXing authors (Apache 2.0)
+- Android Open Source Project libraries (Apache 2.0)
+- Square, Inc. libraries (Apache 2.0)
+- Kotlin Standard Library by JetBrains (Apache 2.0)
+- Kotlinx Serialization by JetBrains (Apache 2.0)
+- Google libraries (Apache 2.0)
